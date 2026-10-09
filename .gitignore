@@ -1,0 +1,6 @@
+# install.sh 留下的备份
+*.pre-typst-kit
+
+# 编译产物
+*.pdf
+__TITLE__*

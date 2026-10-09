@@ -1,0 +1,571 @@
+#!/usr/bin/env python3
+"""typ — typst 笔记小工具：初始化模板 / 自动匹配编译 / 速查表
+
+放在 ~/.local/bin/typ，只依赖 python3 + typst 本体。
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import select as select_mod  # 本文件里 select() 是列表选择函数，避免同名冲突
+import shutil
+import subprocess
+import sys
+import termios
+import time
+import tty
+from datetime import datetime
+from pathlib import Path
+
+VERSION = "0.1.0"
+DEFAULT_TEMPLATE = os.environ.get("TYP_TEMPLATE", "note")
+
+HOME = Path.home()
+CHEATSHEET = Path(os.environ.get("TYP_CHEATSHEET", HOME / "notes/typst/00-cheatsheet.typ"))
+TEMPLATE_DIRS = [
+    Path(os.environ.get("TYP_TEMPLATE_DIR", HOME / ".config/typ/templates")),
+    HOME / "notes/typst",
+    HOME / ".config/nvim/templates",
+]
+CACHE_DIR = Path(os.environ.get("TYP_CACHE", HOME / ".cache/typ"))
+SNIPPET_FILE = Path(os.environ.get("TYP_SNIPPETS", HOME / ".config/nvim/lua/snippets/typst.lua"))
+USAGE_FILE = CACHE_DIR / "snippet-usage.json"
+TITLE_PLACEHOLDER = "__TITLE__"
+BODY_MARKER = "正文从这里开始"
+
+HELP = f"""typ — typst 笔记小工具  v{VERSION}
+
+用法
+  typ init [文件名]              新建一篇 .typ 笔记（引用式模板，排版来自本地包）
+  typ init -s [文件名]            同上，但用自包含模板（排版整段写在文件里，可直接发给别人）
+  typ init -t sample              同上，但用带示例的模板（学写法用）
+  typ compile [文件] [参数…]     编译（不给文件时自动匹配当前目录的 .typ）
+  typ snippets                   打开 snippets 定义文件（改完保存即生效）
+  typ snippets --stats           看哪些片段你常用、哪些没用过
+  typ cheatsheet                 打开 typst 速查表（编译成 PDF 并打开）
+  typ -h, --help                 显示这份帮助
+  typ -V, --version              显示版本
+  （命令可简写：i = init，c = compile，s = snippets）
+
+typ init
+  模板只有排版格式、没有正文：标题自动用文件名填好，光标停在「正文从这里开始」那行。
+  文件名不用写 .typ 后缀（会自动补）；直接回车用默认名「日期-时间」，如 2026-09-27-2145。
+  默认「引用式」：文件头部只有 #import "@local/mathnote:0.1.0" + #show: note.with(…)，排版改一处、所有笔记同步。
+  选项：-s/--standalone 改用自包含模板；--no-open 建完不开 nvim；-t <模板名> 换模板；-y 不问直接建。
+  模板目录：{TEMPLATE_DIRS[0]}
+  以后要加「论文 / 作业」等模板：把 paper.typ、homework.typ 放进该目录，然后 typ init -t paper
+
+typ compile
+  自动匹配当前目录的 .typ 文件；多个匹配时用 ↑↓（或 j/k）选择，回车确认，Esc 取消。
+  以 - 开头的参数原样传给 typst，例如：
+    typ compile --format png        # 编译当前目录唯一的 .typ 为 png
+    typ compile note.typ --open     # 编译并让 typst 自己打开
+  （注意：png/svg 多页导出要自己给输出名并带 {{p}}，如 -o out-{{p}}.png）
+
+typ snippets
+  片段定义文件：{HOME / '.config/nvim/lua/snippets/typst.lua'}
+  改完保存不需要重启 nvim（会自动重载）；nvim 里也可以用 <Space>tS 直接打开。
+  --stats 读取使用次数，帮你挑出该删、该改触发词的片段。
+
+速查表与语法（方便跳转查询）
+  速查表：{CHEATSHEET}
+  空模板：{TEMPLATE_DIRS[0] / (DEFAULT_TEMPLATE + '.typ')}
+  排版库：{HOME / '.config/typ/lib/mathnote.typ'}（本地包 @local/mathnote:0.1.0，笔记里 import 它）
+  自包含模板：{TEMPLATE_DIRS[0] / 'standalone.typ'}
+  nvim 里：
+    <Space>tp 打开浏览器实时预览 / <Space>tP 切换 / <Space>ts 停止 / <Space>tc 同步光标
+    可视模式 gs 包行内公式、gS 包行间公式、ga 包自适应括号
+    数学区打前缀 + Tab 展开片段（ff sq sum mat in …）；$ 自动配对；a1 自动变 a_1
+    改片段：<Space>tS；查片段：typ snippets --stats
+"""
+
+
+# ────────────────────────── 小工具 ──────────────────────────
+
+def err(msg: str) -> None:
+    print(f"typ: {msg}", file=sys.stderr)
+
+
+def need_typst() -> bool:
+    if shutil.which("typst"):
+        return True
+    err("找不到 typst 可执行文件，请先安装 typst")
+    return False
+
+
+def ask_yes_no(prompt: str, default: bool = True) -> bool:
+    hint = "[Y/n]" if default else "[y/N]"
+    while True:
+        ans = input(f"{prompt} {hint} ").strip().lower()
+        if not ans:
+            return default
+        if ans in ("y", "yes", "是"):
+            return True
+        if ans in ("n", "no", "否"):
+            return False
+        print("  请输入 y 或 n（直接回车 = " + ("是" if default else "否") + "）")
+
+
+def select(prompt: str, items: list[str]) -> str | None:
+    """上下键选择；非交互环境退回编号输入。取消返回 None。"""
+    if not items:
+        return None
+    if len(items) == 1:
+        return items[0]
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return select_numbered(prompt, items)
+    return select_arrows(prompt, items)
+
+
+def select_numbered(prompt: str, items: list[str]) -> str | None:
+    print(prompt)
+    for i, it in enumerate(items, 1):
+        print(f"  {i}) {it}")
+    while True:
+        sys.stdout.write(f"选择 [1-{len(items)}]（回车取消）: ")
+        sys.stdout.flush()
+        line = sys.stdin.readline()
+        if not line:
+            print()
+            return None
+        line = line.strip()
+        if not line:
+            return None
+        if line.isdigit() and 1 <= int(line) <= len(items):
+            return items[int(line) - 1]
+        print("  输入无效，请重试")
+
+
+def select_arrows(prompt: str, items: list[str]) -> str | None:
+    n = len(items)
+    idx = 0
+    out = sys.stdout
+
+    def render(first: bool = False) -> None:
+        if not first:
+            out.write(f"\x1b[{n}A")  # 回到列表第一行
+        for i, it in enumerate(items):
+            line = f"  {'❯' if i == idx else ' '} {it}"
+            if i == idx:
+                line = f"\x1b[7m{line}\x1b[0m"
+            out.write(f"\x1b[2K{line}\r\n")
+        out.flush()
+
+    print(prompt + "  (↑↓ 选择，回车确认，Esc 取消)")
+    render(first=True)
+
+    def read_key(fd: int) -> bytes:
+        """读一个键；若是 ESC 开头，再短暂等一下把方向键序列收齐。"""
+        ch = os.read(fd, 1)
+        if ch != b"\x1b":
+            return ch
+        seq = b""
+        end = time.monotonic() + 0.05
+        while len(seq) < 2:
+            left = end - time.monotonic()
+            if left <= 0:
+                break
+            ready, _, _ = select_mod.select([fd], [], [], left)
+            if not ready:
+                break
+            seq += os.read(fd, 1)
+        return ch + seq
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    aborted = False
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = read_key(fd)
+            if ch in (b"\r", b"\n"):
+                break
+            if ch in (b"\x03", b"q"):  # Ctrl-C / q
+                aborted = True
+                break
+            if ch == b"\x1b":  # 裸 Esc（后面没跟着序列）
+                aborted = True
+                break
+            if ch == b"\x1b[A":
+                idx = (idx - 1) % n
+            elif ch == b"\x1b[B":
+                idx = (idx + 1) % n
+            elif ch.startswith(b"\x1b"):
+                continue  # 其它转义序列（Home/End 等）不重绘
+            elif ch == b"k":
+                idx = (idx - 1) % n
+            elif ch == b"j":
+                idx = (idx + 1) % n
+            render()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+    out.write("\x1b[1A\x1b[2K\r")  # 抹掉列表下方那行空行
+    out.flush()
+    if aborted:
+        print("已取消")
+        return None
+    chosen = items[idx]
+    print(f"已选择：{chosen}")
+    return chosen
+
+
+# ────────────────────────── 模板 ──────────────────────────
+
+def find_template(name: str) -> Path | None:
+    for d in TEMPLATE_DIRS:
+        cand = d / f"{name}.typ"
+        if cand.is_file():
+            return cand
+    return None
+
+
+def list_templates() -> list[str]:
+    dirs = [d for d in TEMPLATE_DIRS if d.is_dir()]
+    # 主模板目录里有东西就只看它，避免把 ~/notes/typst 里的笔记也列成模板
+    if dirs and any(dirs[0].glob("*.typ")):
+        dirs = [dirs[0]]
+    names: list[str] = []
+    for d in dirs:
+        for p in sorted(d.glob("*.typ")):
+            stem = "template" if p.stem == "template" else p.stem
+            if stem not in names:
+                names.append(stem)
+    return names
+
+
+def normalize_name(raw: str) -> str:
+    s = raw.strip()
+    if s.lower().endswith(".typ"):
+        s = s[:-4]
+    s = re.sub(r"\s+", "-", s)
+    return s.strip("-")
+
+
+def unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem, suffix = path.stem, path.suffix
+    i = 2
+    while True:
+        cand = path.with_name(f"{stem}-{i}{suffix}")
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def print_init_help() -> None:
+    print(f"""typ init — 新建 typst 笔记
+
+用法
+  typ init [文件名]            引用式模板（默认）：头部只 import 本地包 @local/mathnote:0.1.0
+  typ init -s [文件名]          自包含模板：排版整段写在文件里，不依赖本地包（能直接发给别人）
+  typ init -t sample [文件名]   带示例的模板（学写法用）
+  typ init -t <模板名> [文件名] 用其它模板
+
+选项
+  -s, --standalone  用自包含模板（与 -t 互斥）
+  -t, --template    指定模板名，默认 {DEFAULT_TEMPLATE}
+  -y, --yes         不询问，直接创建
+  -n, --no-open     建完不自动打开 nvim
+  -h, --help        显示这份帮助
+
+说明
+  标题自动用文件名填好；光标停在「正文从这里开始」那行。
+  模板目录：{TEMPLATE_DIRS[0]}
+  排版库：{HOME / '.config/typ/lib/mathnote.typ'}（改它 → 所有引用式笔记同步生效）
+""")
+
+
+def cmd_init(args: list[str]) -> int:
+    template_name = DEFAULT_TEMPLATE
+    name: str | None = None
+    assume_yes = False
+    no_open = False
+    standalone = False
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-t", "--template"):
+            if i + 1 >= len(args):
+                err("-t 后面要跟模板名")
+                return 2
+            if standalone:
+                err("-t 和 -s 不能一起用")
+                return 2
+            template_name = args[i + 1]
+            i += 2
+            continue
+        if a in ("-s", "--standalone"):
+            if template_name != DEFAULT_TEMPLATE:
+                err("-s 和 -t 不能一起用")
+                return 2
+            template_name = "standalone"
+            standalone = True
+        elif a in ("-y", "--yes"):
+            assume_yes = True
+        elif a in ("--no-open", "-n"):
+            no_open = True
+        elif a in ("-h", "--help"):
+            print_init_help()
+            return 0
+        elif a.startswith("-"):
+            err(f"未知参数 {a}（typ init -h 看用法）")
+            return 2
+        elif name is None:
+            name = a
+        else:
+            err("只接受一个文件名")
+            return 2
+        i += 1
+
+    template = find_template(template_name)
+    if template is None:
+        err(f"找不到模板 {template_name}.typ")
+        avail = list_templates()
+        if avail:
+            print("  可用模板：" + "、".join(avail), file=sys.stderr)
+        print(f"  放模板的目录：{TEMPLATE_DIRS[0]}", file=sys.stderr)
+        return 1
+
+    cwd = Path.cwd()
+    if not assume_yes:
+        if not ask_yes_no(f"在当前目录创建 typst 笔记？\n  目录：{cwd}"):
+            print("已取消。")
+            return 0
+
+    default_name = datetime.now().strftime("%Y-%m-%d-%H%M")
+    if name is None:
+        while True:
+            raw = input(f"文件名（不用写 .typ，回车用默认）[{default_name}]: ")
+            if not raw.strip():
+                name = default_name
+                break
+            cand = normalize_name(raw)
+            if not cand:
+                print("  文件名不能为空，请重试")
+                continue
+            if "/" in cand:
+                print("  文件名不能包含 /，请重试")
+                continue
+            name = cand
+            break
+
+    target = cwd / f"{name}.typ"
+    if target.exists() and name == default_name:
+        target = unique_path(target)  # 默认名撞了就自动加 -2
+        print(f"  同名文件已存在，改用 {target.name}")
+    while target.exists():
+        if ask_yes_no(f"  {target.name} 已存在，覆盖？", default=False):
+            break
+        raw = input("文件名: ")
+        cand = normalize_name(raw)
+        if not cand or "/" in cand:
+            print("  文件名无效")
+            continue
+        target = cwd / f"{cand}.typ"
+
+    # 模板只含排版格式，这里把标题占位符换成文件名
+    lines = template.read_text(encoding="utf-8").replace(TITLE_PLACEHOLDER, target.stem).splitlines()
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    body = next((n for n, ln in enumerate(lines, 1) if BODY_MARKER in ln), len(lines))
+
+    print(f"✓ 已创建 {target.name}（模板 {template.stem}，标题 = 文件名）")
+
+    nvim = shutil.which("nvim")
+    want_open = not no_open and sys.stdout.isatty()
+    if want_open and not nvim:
+        err("未找到 nvim，已跳过自动打开")
+        want_open = False
+    if want_open:
+        print("→ 打开 nvim（退出 nvim 后回到命令行；预览按 <Space>tp）")
+        sys.stdout.flush()
+        os.execvp(nvim, [nvim, f"+{body}", str(target)])
+    print(f"  下一步：nvim {target.name}   然后 <Space>tp 打开实时预览")
+    return 0
+
+
+# ────────────────────────── 编译 ──────────────────────────
+
+def pick_target(arg: str | None) -> str | None:
+    if arg:
+        cand = arg if arg.endswith(".typ") or Path(arg).is_file() else arg + ".typ"
+        if any(c in cand for c in "*?["):
+            hits = sorted(glob.glob(cand))
+            if not hits:
+                err(f"没有匹配 {cand} 的文件")
+                return None
+            return select("编译哪个文件？", hits)
+        if not Path(cand).is_file():
+            err(f"找不到 {cand}")
+            return None
+        return cand
+
+    hits = sorted(p.name for p in Path.cwd().glob("*.typ") if not p.name.startswith("."))
+    if not hits:
+        err("当前目录没有 .typ 文件（可以用 typ init 新建一个）")
+        return None
+    return select("编译哪个文件？", hits)
+
+
+def output_ext(passthrough: list[str]) -> str:
+    for i, a in enumerate(passthrough):
+        if a.startswith("--format="):
+            return a.split("=", 1)[1]
+        if a in ("--format", "-f") and i + 1 < len(passthrough):
+            return passthrough[i + 1]
+    return "pdf"
+
+
+def cmd_compile(args: list[str]) -> int:
+    if not need_typst():
+        return 1
+
+    target_arg: str | None = None
+    passthrough: list[str] = []
+    rest = list(args)
+    if rest and not rest[0].startswith("-"):
+        target_arg, rest = rest[0], rest[1:]
+    passthrough.extend(rest)
+
+    target = pick_target(target_arg)
+    if target is None:
+        return 1
+
+    cmd = ["typst", "compile", target, *passthrough]
+    print(f"→ {' '.join(cmd)}")
+    rc = subprocess.call(cmd)
+    if rc != 0:
+        return rc
+
+    explicit_out = any(
+        a in ("--output", "-o") or a.startswith("--output=") for a in passthrough
+    )
+    if not explicit_out:
+        out = Path(target).with_suffix("." + output_ext(passthrough))
+        print(f"✓ 已生成 {out}")
+    return 0
+
+
+def cmd_cheatsheet(args: list[str]) -> int:
+    if not need_typst():
+        return 1
+    if not CHEATSHEET.is_file():
+        err(f"找不到速查表 {CHEATSHEET}")
+        return 1
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    out = CACHE_DIR / "cheatsheet.pdf"
+    rc = subprocess.call(["typst", "compile", str(CHEATSHEET), str(out)])
+    if rc != 0:
+        return rc
+    print(f"✓ 已生成 {out}")
+    if "--no-open" in args:
+        return 0
+    opener = shutil.which("xdg-open")
+    if opener:
+        subprocess.Popen(
+            [opener, str(out)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    else:
+        print("（没找到 xdg-open，自己打开上面这个文件即可）")
+    return 0
+
+
+# ────────────────────────── 片段 ──────────────────────────
+
+def snippet_triggers() -> list[str]:
+    """从片段文件里扫出所有 M("trig") / T("trig") 的触发词（跳过注释行）。"""
+    if not SNIPPET_FILE.is_file():
+        return []
+    text = SNIPPET_FILE.read_text(encoding="utf-8")
+    body = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("--"))
+    return re.findall(r'[MT]\(\s*"([^"]+)"', body)
+
+
+def read_usage() -> dict[str, int]:
+    try:
+        data = json.loads(USAGE_FILE.read_text(encoding="utf-8"))
+        return {str(k): int(v) for k, v in data.items()}
+    except Exception:
+        return {}
+
+
+def cmd_snippets(args: list[str]) -> int:
+    if "--stats" in args:
+        trigs = snippet_triggers()
+        usage = read_usage()
+        if not trigs:
+            err(f"读不到片段定义 {SNIPPET_FILE}")
+            return 1
+        counts = sorted(((usage.get(t, 0), t) for t in trigs), key=lambda x: (-x[0], x[1]))
+        hit = [(n, t) for n, t in counts if n > 0]
+        print(f"片段定义：{SNIPPET_FILE}（共 {len(trigs)} 条）")
+        print(f"使用数据：{USAGE_FILE}")
+        if hit:
+            print("\n用过的（次数从多到少，最多列 20 条）：")
+            for n, t in hit[:20]:
+                print(f"  {n:>4} 次  {t}")
+        else:
+            print("\n  还没有使用记录（在 .typ 里展开过的片段会记进这份数据）")
+        unused = [t for n, t in counts if n == 0]
+        if unused:
+            print(f"\n没用过的 {len(unused)} 条（想精简就把对应的 M(...)/T(...) 行删掉）：")
+            line = "  "
+            for t in unused:
+                if len(line) + len(t) + 2 > 76:
+                    print(line)
+                    line = "  "
+                line += t + "  "
+            if line.strip():
+                print(line)
+        print("\n改完保存即生效（不用重启 nvim）；nvim 里也能按 <Space>tS 打开这个文件。")
+        return 0
+
+    if not SNIPPET_FILE.is_file():
+        err(f"找不到片段文件 {SNIPPET_FILE}")
+        return 1
+    nvim = shutil.which("nvim")
+    if nvim and sys.stdout.isatty():
+        os.execvp(nvim, [nvim, str(SNIPPET_FILE)])
+    print(f"片段文件：{SNIPPET_FILE}")
+    if not nvim:
+        err("未找到 nvim")
+        return 1
+    return 0
+
+
+# ────────────────────────── 入口 ──────────────────────────
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help", "h"):
+        print(HELP)
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd in ("-V", "--version", "version"):
+        print(f"typ {VERSION}")
+        return 0
+    try:
+        if cmd in ("init", "i"):
+            return cmd_init(args)
+        if cmd in ("compile", "c"):
+            return cmd_compile(args)
+        if cmd in ("cheatsheet", "cheat", "cs"):
+            return cmd_cheatsheet(args)
+        if cmd in ("snippets", "snip", "s"):
+            return cmd_snippets(args)
+    except (EOFError, KeyboardInterrupt):
+        print("\n已取消。")
+        return 130
+    err(f"未知命令 {cmd}（typ -h 看用法）")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
