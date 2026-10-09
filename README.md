@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `bin/typ` | `~/.local/bin/typ` | 命令行工具（Python 3，无第三方依赖） |
 | `lib/mathnote.typ` | `~/.config/typ/lib/mathnote.typ` | 排版库本体（环境、编号、标题样式等） |
-| `templates/` | `~/.config/typ/templates/` | 四种模板 + 自包含模板生成脚本 |
+| `templates/` | `~/.config/typ/templates/`（**整个目录**软链） | 四种模板 + 自包含模板生成脚本 |
 | `typst-package/` | `~/.local/share/typst/packages/local/mathnote/0.1.0/` | typst 本地包 `@local/mathnote:0.1.0` |
 | `notes/` | `~/notes/typst/` | 速查表、语法手册 |
 | `nvim/typst.lua` | `~/.config/nvim/lua/snippets/typst.lua` | nvim 里的数学片段定义 |
@@ -77,6 +77,20 @@ typst-kit/
 ├── nvim/typst.lua                # nvim 片段
 └── install.sh
 ```
+
+## 改已有文件 / 加新模板
+
+link 模式下部署出去的都是指向仓库的软链，**改哪边都是改同一份**，推荐直接在仓库里改（`git diff` / `git add` 顺手）。nvim 保存软链文件不会打断软链（已实测）。
+
+`~/.config/typ/templates/` 连**目录本身**都是软链，所以：
+
+```bash
+typ init -t paper          # 还没有 paper.typ？直接建就行
+echo '// 新模板' > ~/.config/typ/templates/paper.typ   # 等于写进仓库 templates/paper.typ
+cd ~/Projects/typst-kit && git add templates/paper.typ  # 提交后别的设备就能拿到
+```
+
+拷贝模式（`--copy`）下没有这层联动，新模板要放进仓库再重跑 `install.sh`。
 
 ## 改排版
 

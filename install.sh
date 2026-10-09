@@ -5,7 +5,7 @@
 #  把仓库里的 typst 笔记工具链部署到本机标准位置：
 #    bin/typ                → ~/.local/bin/typ
 #    lib/mathnote.typ       → ~/.config/typ/lib/mathnote.typ
-#    templates/*            → ~/.config/typ/templates/
+#    templates/             → ~/.config/typ/templates/（整个目录软链：新增模板直接落进仓库）
 #    typst-package/...      → ~/.local/share/typst/packages/local/mathnote/0.1.0/
 #    notes/*                → ~/notes/typst/
 #    nvim/typst.lua         → ~/.config/nvim/lua/snippets/typst.lua
@@ -98,8 +98,13 @@ install_one() {
   fi
 
   # 已经就位（软链指回仓库同一文件，或内容相同的拷贝）→ 什么都不做
-  if [[ -L "$dst" ]] && [[ "$(_realpath "$dst")" == "$(_realpath "$src")" ]]; then
+  if [[ "$MODE" == "link" ]] && [[ -L "$dst" ]] && [[ "$(_realpath "$dst")" == "$(_realpath "$src")" ]]; then
     c_dim "  已是本仓库的软链，跳过：$dst"
+    skipped=$((skipped + 1))
+    return 0
+  fi
+  if [[ "$MODE" == "copy" ]] && [[ ! -L "$dst" && -f "$dst" ]] && cmp -s "$src" "$dst"; then
+    c_dim "  内容与仓库一致，跳过：$dst"
     skipped=$((skipped + 1))
     return 0
   fi
@@ -110,7 +115,12 @@ install_one() {
       if [[ -e "$bak" || -L "$bak" ]]; then
         c_dim "  先前备份仍在，不覆盖：$bak"
       else
-        run cp -a "$dst" "$bak"
+        # 目标是软链时备份**内容**（别存一个指向仓库的链接，否则回滚也回不到独立文件）
+        if [[ -L "$dst" ]]; then
+          run cp -L "$dst" "$bak"
+        else
+          run cp -a "$dst" "$bak"
+        fi
         c_dim "  已备份原文件 → $bak"
       fi
     else
@@ -123,10 +133,72 @@ install_one() {
     run ln -sfn "$src" "$dst"
     c_ok "  软链 $dst → $src"
   else
-    run cp -f "$src" "$dst"
+    # --remove-destination：先解除目标（可能是软链）再写入，避免顺着软链把仓库源文件改了
+    run cp -f --remove-destination "$src" "$dst"
     c_ok "  拷贝 $dst"
   fi
   installed=$((installed + 1))
+}
+
+# 把已存在的目标挪到备份名（永不删除用户的东西）
+backup_aside() {
+  local dst="$1"
+  local bak="$dst.pre-typst-kit"
+  if [[ -e "$bak" || -L "$bak" ]]; then
+    bak="$dst.bak-$(date +%Y%m%d-%H%M%S)"   # 旧备份还在 → 换个带时间戳的名字，绝不删
+  fi
+  if [[ -L "$dst" ]]; then
+    # 软链（目录/文件）：复制成实体再移除，备份不依赖仓库存在
+    run cp -RL "$dst" "$bak"
+    run rm -f "$dst"
+  else
+    run mv "$dst" "$bak"
+  fi
+  c_dim "  已备份原有 → $bak"
+}
+
+# install_dir_link <仓库目录> <目标目录>
+# 把目标**整个目录**换成指向仓库目录的软链：以后在目标里新增文件就是往仓库里加
+install_dir_link() {
+  local src="$1" dst="$2"
+
+  if [[ ! -d "$src" ]]; then
+    err "仓库里找不到目录 $src，跳过"
+    return 0
+  fi
+
+  if [[ -L "$dst" ]] && [[ "$(_realpath "$dst")" == "$(_realpath "$src")" ]]; then
+    c_dim "  已是本仓库的目录软链，跳过：$dst"
+    skipped=$((skipped + 1))
+    return 0
+  fi
+
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    if [[ $BACKUP -eq 1 ]]; then
+      backup_aside "$dst"
+    else
+      c_warn "  将移除已存在的 $dst（--no-backup）"
+      run rm -rf "$dst"
+    fi
+  fi
+
+  run mkdir -p "$(dirname "$dst")"
+  run ln -sfn "$src" "$dst"
+  c_ok "  目录软链 $dst → $src"
+  installed=$((installed + 1))
+}
+
+# 确保目标是**真目录**（--copy 用）：若目标是指向别处的软链，先挪走
+ensure_real_dir() {
+  local dst="$1"
+  if [[ -L "$dst" ]]; then
+    if [[ $BACKUP -eq 1 ]]; then
+      backup_aside "$dst"
+    else
+      run rm -f "$dst"
+    fi
+  fi
+  run mkdir -p "$dst"
 }
 
 echo "typst-kit 安装"
@@ -144,10 +216,18 @@ echo "· 排版库"
 install_one "$REPO/lib/mathnote.typ" "$LIB_PATH"
 
 # ── 3. 模板 ─────────────────────────────────────────────
-echo "· 模板（note / homework / standalone / sample + 生成脚本）"
-for f in note.typ homework.typ standalone.typ sample.typ gen-standalone.sh; do
-  install_one "$REPO/templates/$f" "$TPL_DIR/$f"
-done
+# link 模式：整个 templates 目录软链过去 —— 以后新增模板直接落进仓库
+# copy 模式：逐文件拷进一个真目录
+if [[ "$MODE" == "link" ]]; then
+  echo "· 模板目录（note / homework / standalone / sample + 生成脚本）"
+  install_dir_link "$REPO/templates" "$TPL_DIR"
+else
+  echo "· 模板文件（note / homework / standalone / sample + 生成脚本）"
+  ensure_real_dir "$TPL_DIR"
+  for f in note.typ homework.typ standalone.typ sample.typ gen-standalone.sh; do
+    install_one "$REPO/templates/$f" "$TPL_DIR/$f"
+  done
+fi
 
 # ── 4. typst 本地包 @local/mathnote:0.1.0 ───────────────
 echo "· typst 本地包 @local/mathnote:0.1.0"
