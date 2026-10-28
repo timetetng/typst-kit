@@ -52,6 +52,12 @@ $
   A = mat(delim: "[", 1, 2; 3, 4), quad bold(v) = vec(1, 2, 3), quad abs(x) = cases(x & "if" x >= 0, -x & "else")
 $
 
+== 生成子群
+
+生成子群用 `gen()`，可接受任意多个参数，尖括号随内容高度自适应：
+
+$ gen(H), quad gen(H, K), quad gen(a_1, dots, a_n), quad gen(a^(p^(n-1))) $
+
 == 集合与逻辑
 
 $

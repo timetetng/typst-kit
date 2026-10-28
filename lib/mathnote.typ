@@ -240,7 +240,72 @@
   #box[$square$]
 ]
 
+// ── 有限群常用算子 ──────────────────────────────────────
+// 直接写 $Aut(G)$、$Ker(f)$、$Syl_p(G)$；使用 op 保留正体与算子间距。
+// 只定义多字母名称，不改变 G、H、Z、C、N 等单字母变量。
+// Typst 已内置的 exp、gcd、lcm、deg、dim、det 等继续使用内置定义。
+#let Aut = math.op("Aut")
+#let Inn = math.op("Inn")
+#let Out = math.op("Out")
+#let Hom = math.op("Hom")
+#let End = math.op("End")
+#let Ker = math.op("Ker")
+#let ker = math.op("ker")
+#let Im = math.op("Im")
+#let im = math.op("im")
+#let Coker = math.op("Coker")
+#let coker = math.op("coker")
+#let Coim = math.op("Coim")
+#let coim = math.op("coim")
+#let id = math.op("id")
+#let ord = math.op("ord")
+#let rank = math.op("rank")
+#let tr = math.op("tr")
+
+// 子群、共轭类与根基；Phi / Omega 等名称保留给 Typst 的希腊字母。
+#let Sym = math.op("Sym")
+#let Alt = math.op("Alt")
+#let Syl = math.op("Syl")
+#let Hall = math.op("Hall")
+#let Cl = math.op("Cl")
+#let core = math.op("core")
+#let Core = math.op("Core")
+#let Soc = math.op("Soc")
+#let Fit = math.op("Fit")
+#let Fitt = math.op("Fitt")
+#let Rad = math.op("Rad")
+#let Frat = math.op("Frat")
+
+// 特征标及表示论。
+#let Irr = math.op("Irr")
+#let IBr = math.op("IBr")
+#let Lin = math.op("Lin")
+#let Res = math.op("Res")
+#let Ind = math.op("Ind")
+#let Inf = math.op("Inf")
+#let Def = math.op("Def")
+
+// 常见经典群。
+#let GL = math.op("GL")
+#let SL = math.op("SL")
+#let PGL = math.op("PGL")
+#let PSL = math.op("PSL")
+#let GU = math.op("GU")
+#let SU = math.op("SU")
+#let PGU = math.op("PGU")
+#let PSU = math.op("PSU")
+#let Sp = math.op("Sp")
+#let PSp = math.op("PSp")
+#let GO = math.op("GO")
+#let SO = math.op("SO")
+#let PSO = math.op("PSO")
+
 // ── 辅助 ────────────────────────────────────────────────
+// 生成子群：$gen(H)$、$gen(H, K)$，尖括号随内容高度自适应。
+#let gen(..generators) = math.lr(
+  sym.chevron.l + generators.pos().join($,$) + sym.chevron.r,
+)
+
 // 圈号序号：circled(1) → ① … circled(20) → ⑳（超出 20 退化成 (21))
 // 用来标证明步骤：$#circled(1)$,$#circled(2)$，或正文里 #circled(1)
 #let _circled-table = (
