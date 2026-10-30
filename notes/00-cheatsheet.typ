@@ -39,7 +39,8 @@
   [`typ init -t sample`], [带示例的模板，学写法用；`typ init -h` 看全部选项],
 
   [`typ init -t homework`],
-  [**作业模板**（自包含、不依赖本地包）：`#show: homework.with(title: "…", course: "…", author: "…", id: "…")`（后三个进页眉），正文用 `#problem[题干]`（`source:` 挂灰字出处）、`#解[…]` / `#证明[…]`（自动补 □）、`#填空(w: 2em)`；题号单级递增 + 悬挂缩进，小问直接写 `+` 列表（自动 (1)(2)，缩进与题干齐平）。详见 `typst-manual.typ` 的「作业模板」一节],
+  [*作业模板*（引用 `@local/mathnote:0.1.0`，共用算子和 `gen()` 等辅助函数）：`#show: homework.with(title: "…", course: "…", author: "…", id: "…")`（后三个进页眉），正文用 `#problem[题干]`（`source:` 挂灰字出处）、`#解[…]` / `#证明[…]`（自动补 □）、`#填空(w: 2em)`；题号单级递增 + 悬挂缩进，小问直接写 `+` 列表（自动 (1)(2)，缩进与题干齐平）。详见 `typst-manual.typ` 的「作业模板」一节],
+
   [入口函数],
   [`#show: note.with(title: "标题")` —— 页面、字体、字间距、标题块都靠它带进来],
 

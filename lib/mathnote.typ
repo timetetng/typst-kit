@@ -8,7 +8,7 @@
 //  · 这里是**排版定义**，没有正文；改这个文件 → 所有引用它的笔记一起生效
 //  · 包目录 ~/.local/share/typst/packages/local/mathnote/0.1.0/lib.typ 是本文的软链
 //  · 想要「自带完整头部、不依赖本文件」的模板：`typ init -s <名字>`
-//    (standalone.typ 是本文手工同步的副本，改这里记得同步那一份）
+//    (standalone.typ 由 templates/gen-standalone.sh 自动生成）
 // ============================================================
 
 // ── 定理类环境 ──────────────────────────────────────────
@@ -226,28 +226,37 @@
 )
 
 // 证明：中文不用斜体（西文斜体对汉字是伪斜体，很难看），改加粗；结尾 □（空心方块）= $square$
-#let proof(body, title: none) = block(
+#let _answer(label, body, qed: false, above: 0.6em, below: 1.2em) = block(
   width: 100%,
-  above: 0.6em,
-  below: 0.9em,
+  above: above,
+  below: below,
   breakable: true,
 )[
-  // 证明内部也不缩进（与定理环境一致）
   #set par(first-line-indent: 0pt)
-  #text(weight: "bold")[证明#(if title != none [ （#title)])]#h(0.4em)
+  #text(weight: "bold")[#label]#h(0.4em)
   #body
-  #h(1fr)
-  #box[$square$]
+  #if qed [
+    #h(1fr)
+    #box[$square$] // 空心方块，笔记库同款
+  ]
 ]
 
+#let proof(body, title: none) = _answer(
+  [证明#(if title != none [ （#title)])],
+  body,
+  qed: true,
+  below: 0.9em,
+)
+
 // ── 有限群常用算子 ──────────────────────────────────────
-// 直接写 $Aut(G)$、$Ker(f)$、$Syl_p(G)$；使用 op 保留正体与算子间距。
-// 只定义多字母名称，不改变 G、H、Z、C、N 等单字母变量。
-// Typst 已内置的 exp、gcd、lcm、deg、dim、det 等继续使用内置定义。
+// 直接写 $Aut(G)$,$Ker(f)$,$Syl_p(G)$；使用 op 保留正体与算子间距。
+// 只定义多字母名称，不改变 G,H,Z,C,N 等单字母变量。
+// Typst 已内置的 exp,gcd,lcm,deg,dim,det 等继续使用内置定义。
 #let Aut = math.op("Aut")
 #let Inn = math.op("Inn")
 #let Out = math.op("Out")
 #let Hom = math.op("Hom")
+#let Hol = math.op("Hol")
 #let End = math.op("End")
 #let Ker = math.op("Ker")
 #let ker = math.op("ker")
@@ -301,7 +310,7 @@
 #let PSO = math.op("PSO")
 
 // ── 辅助 ────────────────────────────────────────────────
-// 生成子群：$gen(H)$、$gen(H, K)$，尖括号随内容高度自适应。
+// 生成子群：$gen(H)$,$gen(H, K)$，尖括号随内容高度自适应。
 #let gen(..generators) = math.lr(
   sym.chevron.l + generators.pos().join($,$) + sym.chevron.r,
 )
@@ -357,50 +366,8 @@
   ]
 }
 
-// ── 入口：整篇文档的排版都在这个函数里 ──────────────────
-// ⚠ 所有 set/show 必须写在函数体内 —— Typst 的 set/show 只在定义它的
-//   文件作用域生效，写在文件顶层的话 import 方一点也继承不到。
-//
-// 可调参数（其余样式想改就直接改本文件）:
-//   title          页面大标题；none = 不显示标题块
-//   tracking       正文字间距（默认 1pt)
-//   title-tracking 页面大标题字间距（默认 2pt)
-//   size           正文字号
-//   margin         页边距
-//   indent         中文首行缩进，默认 2em（两个汉字）；写 none 关闭
-//   header         是否在页眉显示当前章（默认 true)
-#let note(
-  title: none,
-  body,
-  tracking: 1pt,
-  title-tracking: 2pt,
-  size: 11pt,
-  margin: (x: 2.4cm, y: 2.2cm),
-  indent: 2em,
-  header: true,
-) = {
-  set page(
-    paper: "a4",
-    margin: margin,
-    numbering: "1",
-    // 页眉：左侧「章号 章标题」。取本页第一个一级标题（若本页没有章标题，
-    // 则沿用前面最近的一章），这样同一页里跨两章时不会提前打成下一章的页眉
-    header: if header {
-      context {
-        let p = here().page()
-        let hs = query(heading.where(level: 1))
-        let cur = hs.filter(h => h.location().page() >= p).at(0, default: none)
-        let ch = if cur != none { cur } else {
-          hs.filter(h => h.location().page() < p).last(default: none)
-        }
-        if ch != none {
-          set text(size: 8.5pt, fill: luma(120))
-          numbering("1.", counter(heading).at(ch.location()).at(0))
-          [#h(0.5em)#ch.body]
-        }
-      }
-    } else { none },
-  )
+// ── 公共排版：笔记和作业共用 ────────────────────────────
+#let _base(body, size: 11pt, tracking: 1pt, indent: 2em) = {
   set text(
     // covers：让西文/西文标点归 New Computer Modern，汉字归思源宋体
     font: (
@@ -433,7 +400,6 @@
       (amount: indent, all: true)
     },
   )
-  set heading(numbering: "1.1")
   show raw.where(block: true): set block(
     inset: 8pt,
     radius: 3pt,
@@ -446,6 +412,56 @@
   //   「带标签的公式」生效（it.label / element.label / selector(label) 都不存在，实测）.
   set math.equation(numbering: none)
   show math.equation.where(block: true): set block(above: 0.9em, below: 0.9em)
+
+  body
+}
+
+// ── 入口：笔记专用排版 ──────────────────────────────────
+// ⚠ 所有 set/show 必须写在函数体内 —— Typst 的 set/show 只在定义它的
+//   文件作用域生效，写在文件顶层的话 import 方一点也继承不到。
+//
+// 可调参数（其余样式想改就直接改本文件）:
+//   title          页面大标题；none = 不显示标题块
+//   tracking       正文字间距（默认 1pt)
+//   title-tracking 页面大标题字间距（默认 2pt)
+//   size           正文字号
+//   margin         页边距
+//   indent         中文首行缩进，默认 2em（两个汉字）；写 none 关闭
+//   header         是否在页眉显示当前章（默认 true)
+#let note(
+  title: none,
+  body,
+  tracking: 1pt,
+  title-tracking: 2pt,
+  size: 11pt,
+  margin: (x: 2.4cm, y: 2.2cm),
+  indent: 2em,
+  header: true,
+) = {
+  show: _base.with(size: size, tracking: tracking, indent: indent)
+  set page(
+    paper: "a4",
+    margin: margin,
+    numbering: "1",
+    // 页眉：左侧「章号 章标题」。取本页第一个一级标题（若本页没有章标题，
+    // 则沿用前面最近的一章），这样同一页里跨两章时不会提前打成下一章的页眉
+    header: if header {
+      context {
+        let p = here().page()
+        let hs = query(heading.where(level: 1))
+        let cur = hs.filter(h => h.location().page() >= p).at(0, default: none)
+        let ch = if cur != none { cur } else {
+          hs.filter(h => h.location().page() < p).last(default: none)
+        }
+        if ch != none {
+          set text(size: 8.5pt, fill: luma(120))
+          numbering("1.", counter(heading).at(ch.location()).at(0))
+          [#h(0.5em)#ch.body]
+        }
+      }
+    } else { none },
+  )
+  set heading(numbering: "1.1")
 
   // @引用：把目标环境/公式埋在 metadata 里的编号取回来（详见文件开头 _c 的说明）
   show ref: it => {
@@ -483,3 +499,106 @@
   }
   body
 }
+
+// ── 作业：独立布局，复用公共排版与解答块 ────────────────
+#let homework(
+  title: "作业",
+  course: none, // 课程名（页眉左侧）
+  author: none, // 姓名（页眉右侧）
+  id: none, // 学号
+  date: datetime.today(),
+  size: 11pt,
+  margin: (x: 2.2cm, y: 2.0cm),
+  header: true,
+  body,
+) = {
+  set page(
+    paper: "a4",
+    margin: margin,
+    header: if header {
+      context {
+        set text(size: 8.5pt, fill: luma(120))
+        let who = if author != none and id != none [
+          #author　学号 #id
+        ] else if author != none [
+          #author
+        ] else if id != none [
+          学号 #id
+        ] else {
+          []
+        }
+        grid(
+          columns: (1fr, auto),
+          if course != none { [#course] } else { [] }, who,
+        )
+      }
+    } else { none },
+    footer: context {
+      set align(center)
+      set text(size: 9pt, fill: luma(120))
+      [第 #counter(page).display() 页 / 共 #counter(page).final().last() 页]
+    },
+  )
+  show: _base.with(size: size)
+  set enum(numbering: "(1)", indent: 1.15em)
+  set list(indent: 1.15em)
+
+  // 标题块（课程/姓名/学号在页眉，这里只放作业名与日期）
+  align(center)[
+    #text(size: 16pt, weight: "bold", tracking: 2pt)[#title]
+    #v(2pt)
+    #text(size: 10pt, fill: luma(110))[#date.display("[year]-[month]-[day]")]
+  ]
+  v(0.7em)
+  line(length: 100%, stroke: 0.5pt + luma(190))
+  v(0.9em)
+
+  body
+}
+
+// ── 题号计数器 ─────────────────────────────────────────────
+// 作业没有章号，编号退化成单级递增：1、2、3…（改题/补题不会乱号）
+#let _pnum = counter("hw-problem")
+
+// ── 题目 ──────────────────────────────────────────────────
+// 用法
+//   #problem[题干…]                        自动编号 + 抄录题干
+//   #problem(source: "P42 习题 3")[题干…]   题号后挂出处
+//   #problem(source: "P42 习题 3")[]        只写出处、不抄题干（[] 不能省）
+// ⚠️ 题干是**必填的位置参数**，所以 trailing 方块要放在命名参数后面不能省。
+//    （Typst 不允许「带默认值的位置参数」，因此这里没法让 body 可省。）
+#let problem(
+  body,
+  source: none,
+  above: 2.6em,
+  below: 0.6em,
+) = {
+  _pnum.step()
+  // 悬挂缩进：题号顶格（与解答的「解」左边缘齐），题干文字与续行都对齐到 1.15em。
+  // ⚠️ 这里**不能用 block 包住正文**：实测 typst 0.15.1 下 `set par(hanging-indent:)`
+  //    一旦落在 block 容器里就失效（续行会顶格）；所以用 `v()` 手动造上下间距。
+  v(above, weak: true)
+  set par(first-line-indent: 0pt, hanging-indent: 1.15em)
+  context [
+    #box(width: 1.15em, align(left)[*#_pnum.display("1.")*]) #body#if (
+      source != none
+    ) [ #text(size: 0.88em, fill: luma(120), tracking: 0pt)[（#source）]]
+  ]
+  v(below)
+}
+
+// ── 解答 ───────────────────────────────────────────────────
+// 与笔记里的 #proof 同款：不加底色的块，开头一个加粗标签。
+// 中文不用斜体（对汉字是伪斜体），所以标签加粗而不是倾斜。
+#let 解(body, qed: false) = _answer([解], body, qed: qed)
+#let 证明(body) = _answer([证明], body, qed: true)
+// 西文别名（习惯写英文时用）
+#let homework-solution(body, qed: false) = 解(body, qed: qed)
+#let homework-proof(body) = 证明(body)
+
+// ── 填空横线 ───────────────────────────────────────────────
+#let 填空(w: 3em) = box(
+  width: w,
+  height: 1.1em,
+  stroke: (bottom: 0.6pt + luma(110)),
+)[]
